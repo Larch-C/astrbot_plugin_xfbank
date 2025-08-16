@@ -73,11 +73,12 @@ class BankData:
 bank_data = BankData()
 
 def generate_card_number(user_id: str) -> str:
-    """生成卡号：前缀+用户ID后6位+校验位"""
-    user_suffix = str(user_id)[-6:].zfill(6)  # 确保6位，不足补0
-    # 简单校验位计算
-    check_digit = sum(int(c) for c in user_suffix) % 10
-    return f"XF{user_suffix}{check_digit}"
+    """生成唯一卡号：X+四位数字，不重复"""
+    existing_cards = set(bank_data.cards.values())
+    while True:
+        number = f"X{random.randint(1000, 9999)}"
+        if number not in existing_cards:
+            return number
 
 def other_bank_transfer(bank_name: str, target_account: str, amount: int) -> bool:
     """模拟跨行转账接口"""
