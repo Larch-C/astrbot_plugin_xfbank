@@ -108,9 +108,12 @@ class BankPlugin(Star):
 
     @filter.command("xfbank")
     async def xfbank(self, event: AstrMessageEvent):
-        """处理开户相关命令"""
-        user_id = event.get_sender_id()
+        # 只保留命令后的参数
         args = event.message_str.strip().split()
+        if args and args[0].lower() == "xfbank":
+            args = args[1:]
+        logger.info(f"xfbank命令收到参数: {args}")
+        user_id = event.get_sender_id()
         
         # 开户命令：/xfbank kaihu
         if len(args) >= 1 and args[0] == "kaihu":
@@ -130,23 +133,24 @@ class BankPlugin(Star):
                 f"无需密码，所有操作直接使用命令即可"
             )
             return
-        
+    
         yield event.plain_result(
             "虚拟银行命令帮助：\n"
-            "/xfbank kaihu - 开户"
+            "/xfbank kaihu - 开户\n"
+            "/bank balance - 查询余额\n"
+            "/bank deposit <金额> - 存款\n"
+            "/bank withdraw <金额> - 取款\n"
+            "/bank transfer 本行 <目标卡号> <金额> - 本银行转账\n"
+            "/bank transfer <目标银行> <目标账户> <金额> - 跨行转账\n"
+            "/bank record [条数] - 查询交易记录（默认10条，最多20条）"
         )
 
     @filter.command("bank")
     async def bank(self, event: AstrMessageEvent):
-        """处理核心银行业务命令"""
         user_id = event.get_sender_id()
-        
-        if user_id not in bank_data.cards:
-            yield event.plain_result("请先开户，发送 /xfbank kaihu")
-            return
-            
         args = event.message_str.strip().split()
-        
+        if args and args[0].lower() == "bank":
+            args = args[1:]
         # 1. 查询余额：/bank balance
         if len(args) == 1 and args[0] == "balance":
             balance = bank_data.accounts.get(user_id, 0)
