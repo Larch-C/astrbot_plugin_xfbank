@@ -15,7 +15,6 @@ class BankData:
     def __init__(self):
         self.accounts = {}      # {user_id: 余额}
         self.cards = {}         # {user_id: 卡号}
-        self.passwords = {}     # {user_id: 密码哈希} 实际应用中应使用加密哈希
         self.transactions = {}  # {user_id: [交易记录]}
         self.load_data()
 
@@ -27,7 +26,6 @@ class BankData:
                     data = json.load(f)
                     self.accounts = data.get('accounts', {})
                     self.cards = data.get('cards', {})
-                    self.passwords = data.get('passwords', {})
                     self.transactions = data.get('transactions', {})
                 logger.info("银行数据加载成功")
             except Exception as e:
@@ -40,7 +38,6 @@ class BankData:
                 data = {
                     'accounts': self.accounts,
                     'cards': self.cards,
-                    'passwords': self.passwords,
                     'transactions': self.transactions
                 }
                 with open(DATA_FILE, 'w', encoding='utf-8') as f:
@@ -78,24 +75,17 @@ def generate_card_number(user_id: str) -> str:
     check_digit = sum(int(c) for c in user_suffix) % 10
     return f"XF{user_suffix}{check_digit}"
 
-def verify_password(user_id: str, password: str) -> bool:
-    """验证密码（实际应用中应使用加密哈希验证）"""
-    stored_password = bank_data.passwords.get(user_id)
-    return stored_password == password  # 简化处理，实际应使用哈希比较
-
 def other_bank_transfer(bank_name: str, target_account: str, amount: int) -> bool:
     """模拟跨行转账接口"""
     logger.info(f"向{bank_name}的账户{target_account}转账{amount}元")
-    # 模拟网络请求延迟
     import time
     time.sleep(0.5)
-    return True  # 实际应用中应根据真实接口返回结果
+    return True
 
 @register("xfbank", "YourName", "一个功能完善的虚拟银行插件", "2.0.0")
 class BankPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        # 启动定期保存数据的任务（每5分钟）
         self.start_auto_save()
 
     def start_auto_save(self):
@@ -103,7 +93,6 @@ class BankPlugin(Star):
         def auto_save():
             while True:
                 bank_data.save_data()
-                # 每5分钟保存一次
                 import time
                 time.sleep(300)
         
@@ -114,7 +103,7 @@ class BankPlugin(Star):
         logger.info("虚拟银行插件已初始化")
 
     async def terminate(self):
-        bank_data.save_data()  # 退出时保存数据
+        bank_data.save_data()
         logger.info("虚拟银行插件已卸载")
 
     @filter.command("xfbank")
@@ -123,61 +112,28 @@ class BankPlugin(Star):
         user_id = event.get_sender_id()
         args = event.message_str.strip().split()
         
-        # 开户命令：/xfbank kaihu <密码>
+        # 开户命令：/xfbank kaihu
         if len(args) >= 1 and args[0] == "kaihu":
             if user_id in bank_data.cards:
                 yield event.plain_result(f"你已开户，卡号为：{bank_data.cards[user_id]}")
                 return
                 
-            if len(args) != 2:
-                yield event.plain_result("开户命令需要设置密码，用法：/xfbank kaihu <密码>")
-                return
-                
-            password = args[1]
-            if len(password) < 6:
-                yield event.plain_result("密码长度不能少于6位")
-                return
-                
             # 创建账户
             card_number = generate_card_number(user_id)
             bank_data.cards[user_id] = card_number
-            bank_data.accounts[user_id] = 0  # 初始余额0
-            bank_data.passwords[user_id] = password  # 实际应用中应存储哈希值
+            bank_data.accounts[user_id] = 0
             bank_data.add_transaction(user_id, "开户", 0)
             bank_data.save_data()
             
             yield event.plain_result(
                 f"开户成功！\n卡号：{card_number}\n"
-                f"请妥善保管你的密码，后续操作需要验证密码"
+                f"无需密码，所有操作直接使用命令即可"
             )
             return
         
-        # 修改密码：/xfbank changepwd <旧密码> <新密码>
-        elif len(args) == 3 and args[0] == "changepwd":
-            if user_id not in bank_data.cards:
-                yield event.plain_result("请先开户，发送 /xfbank kaihu <密码>")
-                return
-                
-            old_pwd, new_pwd = args[1], args[2]
-            if not verify_password(user_id, old_pwd):
-                yield event.plain_result("旧密码不正确")
-                return
-                
-            if len(new_pwd) < 6:
-                yield event.plain_result("新密码长度不能少于6位")
-                return
-                
-            bank_data.passwords[user_id] = new_pwd
-            bank_data.add_transaction(user_id, "修改密码", 0)
-            bank_data.save_data()
-            yield event.plain_result("密码修改成功")
-            return
-            
-        # 命令帮助
         yield event.plain_result(
             "虚拟银行命令帮助：\n"
-            "/xfbank kaihu <密码> - 开户并设置密码\n"
-            "/xfbank changepwd <旧密码> <新密码> - 修改密码"
+            "/xfbank kaihu - 开户"
         )
 
     @filter.command("bank")
@@ -185,20 +141,14 @@ class BankPlugin(Star):
         """处理核心银行业务命令"""
         user_id = event.get_sender_id()
         
-        # 检查是否已开户
         if user_id not in bank_data.cards:
-            yield event.plain_result("请先开户，发送 /xfbank kaihu <密码>")
+            yield event.plain_result("请先开户，发送 /xfbank kaihu")
             return
             
         args = event.message_str.strip().split()
         
-        # 1. 查询余额：/bank balance <密码>
-        if len(args) == 2 and args[0] == "balance":
-            password = args[1]
-            if not verify_password(user_id, password):
-                yield event.plain_result("密码错误")
-                return
-                
+        # 1. 查询余额：/bank balance
+        if len(args) == 1 and args[0] == "balance":
             balance = bank_data.accounts.get(user_id, 0)
             yield event.plain_result(
                 f"账户信息：\n"
@@ -208,32 +158,20 @@ class BankPlugin(Star):
             )
             return
             
-        # 2. 存款：/bank deposit <金额> <密码>
-        elif len(args) == 3 and args[0] == "deposit":
+        # 2. 存款：/bank deposit <金额>
+        elif len(args) == 2 and args[0] == "deposit":
             try:
                 amount = int(args[1])
-                password = args[2]
-                
-                if not verify_password(user_id, password):
-                    yield event.plain_result("密码错误")
-                    return
-                    
                 if amount <= 0:
                     yield event.plain_result("存款金额必须为正数")
                     return
-                    
-                # 限制单次存款上限
                 if amount > 100000:
                     yield event.plain_result("单次存款不能超过100000元")
                     return
-                    
-                # 更新余额
                 bank_data.accounts[user_id] = bank_data.accounts.get(user_id, 0) + amount
                 bank_data.add_transaction(user_id, "存款", amount)
                 bank_data.save_data()
-                
                 yield event.plain_result(
-                    f"存款成功！\n"
                     f"存款成功！\n"
                     f"存款金额：{amount} 元\n"
                     f"当前余额：{bank_data.accounts[user_id]} 元"
@@ -243,35 +181,23 @@ class BankPlugin(Star):
                 yield event.plain_result("请输入正确的金额数字")
                 return
                 
-        # 3. 取款：/bank withdraw <金额> <密码>
-        elif len(args) == 3 and args[0] == "withdraw":
+        # 3. 取款：/bank withdraw <金额>
+        elif len(args) == 2 and args[0] == "withdraw":
             try:
                 amount = int(args[1])
-                password = args[2]
-                
-                if not verify_password(user_id, password):
-                    yield event.plain_result("密码错误")
-                    return
-                    
                 if amount <= 0:
                     yield event.plain_result("取款金额必须为正数")
                     return
-                    
-                # 限制单次取款上限
                 if amount > 50000:
                     yield event.plain_result("单次取款不能超过50000元")
                     return
-                    
                 current_balance = bank_data.accounts.get(user_id, 0)
                 if current_balance < amount:
                     yield event.plain_result(f"余额不足！当前余额：{current_balance} 元")
                     return
-                    
-                # 更新余额
                 bank_data.accounts[user_id] = current_balance - amount
                 bank_data.add_transaction(user_id, "取款", amount)
                 bank_data.save_data()
-                
                 yield event.plain_result(
                     f"取款成功！\n"
                     f"取款金额：{amount} 元\n"
@@ -282,56 +208,38 @@ class BankPlugin(Star):
                 yield event.plain_result("请输入正确的金额数字")
                 return
                 
-        # 4. 本银行转账：/bank transfer 本行 <目标卡号> <金额> <密码>
-        elif len(args) == 5 and args[0] == "transfer" and args[1] == "本行":
+        # 4. 本银行转账：/bank transfer 本行 <目标卡号> <金额>
+        elif len(args) == 4 and args[0] == "transfer" and args[1] == "本行":
             try:
                 target_card = args[2]
                 amount = int(args[3])
-                password = args[4]
-                
-                if not verify_password(user_id, password):
-                    yield event.plain_result("密码错误")
-                    return
-                    
                 if amount <= 0:
                     yield event.plain_result("转账金额必须为正数")
                     return
-                    
-                # 限制单次转账上限
                 if amount > 50000:
                     yield event.plain_result("单次转账不能超过50000元")
                     return
-                    
-                # 查找目标用户ID
                 target_user_id = None
                 for uid, card in bank_data.cards.items():
                     if card == target_card:
                         target_user_id = uid
                         break
-                        
                 if not target_user_id:
                     yield event.plain_result("目标卡号不存在")
                     return
-                    
                 if target_user_id == user_id:
                     yield event.plain_result("不能向自己转账")
                     return
-                    
                 current_balance = bank_data.accounts.get(user_id, 0)
                 if current_balance < amount:
                     yield event.plain_result(f"余额不足！当前余额：{current_balance} 元")
                     return
-                    
-                # 执行转账
-                with LOCK:  # 确保转账操作的原子性
+                with LOCK:
                     bank_data.accounts[user_id] = current_balance - amount
                     bank_data.accounts[target_user_id] = bank_data.accounts.get(target_user_id, 0) + amount
-                
-                # 记录交易
                 bank_data.add_transaction(user_id, "转账支出", amount, target_card)
                 bank_data.add_transaction(target_user_id, "转账收入", amount, bank_data.cards[user_id])
                 bank_data.save_data()
-                
                 yield event.plain_result(
                     f"向本行卡号 {target_card} 转账成功！\n"
                     f"转账金额：{amount} 元\n"
@@ -342,36 +250,23 @@ class BankPlugin(Star):
                 yield event.plain_result("请输入正确的金额数字")
                 return
                 
-        # 5. 跨行转账：/bank transfer <目标银行> <目标账户> <金额> <密码>
-        elif len(args) == 5 and args[0] == "transfer":
+        # 5. 跨行转账：/bank transfer <目标银行> <目标账户> <金额>
+        elif len(args) == 4 and args[0] == "transfer":
             try:
                 bank_name = args[1]
                 target_account = args[2]
                 amount = int(args[3])
-                password = args[4]
-                
-                if not verify_password(user_id, password):
-                    yield event.plain_result("密码错误")
-                    return
-                    
                 if amount <= 0:
                     yield event.plain_result("转账金额必须为正数")
                     return
-                    
-                # 限制单次转账上限
                 if amount > 50000:
                     yield event.plain_result("单次转账不能超过50000元")
                     return
-                    
                 current_balance = bank_data.accounts.get(user_id, 0)
                 if current_balance < amount:
                     yield event.plain_result(f"余额不足！当前余额：{current_balance} 元")
                     return
-                    
-                # 扣减余额
                 bank_data.accounts[user_id] = current_balance - amount
-                
-                # 调用跨行转账接口
                 success = other_bank_transfer(bank_name, target_account, amount)
                 if success:
                     bank_data.add_transaction(
@@ -383,7 +278,6 @@ class BankPlugin(Star):
                         f"当前余额：{bank_data.accounts[user_id]} 元"
                     )
                 else:
-                    # 转账失败回滚
                     bank_data.accounts[user_id] = current_balance
                     yield event.plain_result("跨行转账失败，请稍后再试")
                 return
@@ -391,28 +285,18 @@ class BankPlugin(Star):
                 yield event.plain_result("请输入正确的金额数字")
                 return
                 
-        # 6. 查询交易记录：/bank record [条数] <密码>
-        elif (len(args) == 2 or len(args) == 3) and args[0] == "record":
+        # 6. 查询交易记录：/bank record [条数]
+        elif (len(args) == 1 or len(args) == 2) and args[0] == "record":
             try:
-                # 解析参数
-                if len(args) == 3:
-                    count = min(int(args[1]), 20)  # 最多显示20条
-                    password = args[2]
+                if len(args) == 2:
+                    count = min(int(args[1]), 20)
                 else:
-                    count = 10  # 默认显示10条
-                    password = args[1]
-                    
-                if not verify_password(user_id, password):
-                    yield event.plain_result("密码错误")
-                    return
-                    
+                    count = 10
                 records = bank_data.transactions.get(user_id, [])
                 if not records:
                     yield event.plain_result("暂无交易记录")
                     return
-                    
-                # 取最近的count条记录
-                display_records = records[-count:][::-1]  # 倒序显示，最新的在前
+                display_records = records[-count:][::-1]
                 result = ["最近交易记录："]
                 for idx, record in enumerate(display_records, 1):
                     result.append(
@@ -420,20 +304,18 @@ class BankPlugin(Star):
                         f"{'→ ' + record['target'] if record['target'] else ''} "
                         f"[余额：{record['balance']}元]"
                     )
-                    
                 yield event.plain_result("\n".join(result))
                 return
             except ValueError:
-                yield event.plain_result("用法：/bank record [条数] <密码>")
+                yield event.plain_result("用法：/bank record [条数]")
                 return
                 
-        # 命令帮助
         yield event.plain_result(
             "银行操作命令帮助：\n"
-            "/bank balance <密码> - 查询余额\n"
-            "/bank deposit <金额> <密码> - 存款\n"
-            "/bank withdraw <金额> <密码> - 取款\n"
-            "/bank transfer 本行 <目标卡号> <金额> <密码> - 本银行转账\n"
-            "/bank transfer <目标银行> <目标账户> <金额> <密码> - 跨行转账\n"
-            "/bank record [条数] <密码> - 查询交易记录（默认10条，最多20条）"
+            "/bank balance - 查询余额\n"
+            "/bank deposit <金额> - 存款\n"
+            "/bank withdraw <金额> - 取款\n"
+            "/bank transfer 本行 <目标卡号> <金额> - 本银行转账\n"
+            "/bank transfer <目标银行> <目标账户> <金额> - 跨行转账\n"
+            "/bank record [条数] - 查询交易记录（默认10条，最多20条）"
         )
