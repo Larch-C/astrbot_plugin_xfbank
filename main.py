@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import random
 from datetime import datetime
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register    
@@ -16,6 +17,7 @@ class BankData:
         self.accounts = {}      # {user_id: 余额}
         self.cards = {}         # {user_id: 卡号}
         self.transactions = {}  # {user_id: [交易记录]}
+        self.last_checkin = {}  # {user_id: 上次签到日期}
         self.load_data()
 
     def load_data(self):
@@ -27,6 +29,7 @@ class BankData:
                     self.accounts = data.get('accounts', {})
                     self.cards = data.get('cards', {})
                     self.transactions = data.get('transactions', {})
+                    self.last_checkin = data.get('last_checkin', {})
                 logger.info("银行数据加载成功")
             except Exception as e:
                 logger.error(f"加载银行数据失败: {str(e)}")
@@ -38,7 +41,8 @@ class BankData:
                 data = {
                     'accounts': self.accounts,
                     'cards': self.cards,
-                    'transactions': self.transactions
+                    'transactions': self.transactions,
+                    'last_checkin': self.last_checkin
                 }
                 with open(DATA_FILE, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
@@ -135,14 +139,13 @@ class BankPlugin(Star):
             return
     
         yield event.plain_result(
-            "虚拟银行命令帮助：\n"
-            "/xfbank kaihu - 开户\n"
-            "/bank balance - 查询余额\n"
-            "/bank deposit <金额> - 存款\n"
-            "/bank withdraw <金额> - 取款\n"
-            "/bank transfer 本行 <目标卡号> <金额> - 本银行转账\n"
-            "/bank transfer <目标银行> <目标账户> <金额> - 跨行转账\n"
-            "/bank record [条数] - 查询交易记录（默认10条，最多20条）"
+       "银行操作命令帮助：\n"
+       "银行操作命令帮助：\n"
+       "/bank chaxun - 查询余额\n"
+       "/bank qiandao - 每日签到（100~500元，含小数）\n"
+       "/bank transfer 本行 <目标卡号> <金额> - 本银行转账\n"
+       "/bank transfer <目标银行> <目标账户> <金额> - 跨行转账\n"
+       "/bank record [条数] - 查询交易记录（默认10条，最多20条）"
         )
 
     @filter.command("bank")
@@ -151,77 +154,45 @@ class BankPlugin(Star):
         args = event.message_str.strip().split()
         if args and args[0].lower() == "bank":
             args = args[1:]
-        # 1. 查询余额：/bank balance
-        if len(args) == 1 and args[0] == "balance":
+
+        # 1. 查询余额：/bank chaxun
+        if len(args) == 1 and args[0] == "chaxun":
             balance = bank_data.accounts.get(user_id, 0)
             yield event.plain_result(
                 f"账户信息：\n"
-                f"卡号：{bank_data.cards[user_id]}\n"
-                f"当前余额：{balance} 元\n"
+                f"卡号：{bank_data.cards.get(user_id, '未开户')}\n"
+                f"当前余额：{balance:.2f} 元\n"
                 f"查询时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
             return
-            
-        # 2. 存款：/bank deposit <金额>
-        elif len(args) == 2 and args[0] == "deposit":
-            try:
-                amount = int(args[1])
-                if amount <= 0:
-                    yield event.plain_result("存款金额必须为正数")
-                    return
-                if amount > 100000:
-                    yield event.plain_result("单次存款不能超过100000元")
-                    return
-                bank_data.accounts[user_id] = bank_data.accounts.get(user_id, 0) + amount
-                bank_data.add_transaction(user_id, "存款", amount)
-                bank_data.save_data()
-                yield event.plain_result(
-                    f"存款成功！\n"
-                    f"存款金额：{amount} 元\n"
-                    f"当前余额：{bank_data.accounts[user_id]} 元"
-                )
+
+        # 2. 签到：/bank qiandao
+        elif len(args) == 1 and args[0] == "qiandao":
+            if user_id not in bank_data.cards:
+                yield event.plain_result("请先开户，发送 /xfbank kaihu")
                 return
-            except ValueError:
-                yield event.plain_result("请输入正确的金额数字")
+            today = datetime.now().strftime("%Y-%m-%d")
+            last = bank_data.last_checkin.get(user_id, "")
+            if last == today:
+                yield event.plain_result("今天已签到，请勿重复签到。")
                 return
-                
-        # 3. 取款：/bank withdraw <金额>
-        elif len(args) == 2 and args[0] == "withdraw":
-            try:
-                amount = int(args[1])
-                if amount <= 0:
-                    yield event.plain_result("取款金额必须为正数")
-                    return
-                if amount > 50000:
-                    yield event.plain_result("单次取款不能超过50000元")
-                    return
-                current_balance = bank_data.accounts.get(user_id, 0)
-                if current_balance < amount:
-                    yield event.plain_result(f"余额不足！当前余额：{current_balance} 元")
-                    return
-                bank_data.accounts[user_id] = current_balance - amount
-                bank_data.add_transaction(user_id, "取款", amount)
-                bank_data.save_data()
-                yield event.plain_result(
-                    f"取款成功！\n"
-                    f"取款金额：{amount} 元\n"
-                    f"当前余额：{bank_data.accounts[user_id]} 元"
-                )
-                return
-            except ValueError:
-                yield event.plain_result("请输入正确的金额数字")
-                return
-                
-        # 4. 本银行转账：/bank transfer 本行 <目标卡号> <金额>
+            amount = round(random.uniform(100, 500), 2)
+            bank_data.accounts[user_id] = round(bank_data.accounts.get(user_id, 0) + amount, 2)
+            bank_data.last_checkin[user_id] = today
+            bank_data.add_transaction(user_id, "每日签到", amount)
+            bank_data.save_data()
+            yield event.plain_result(
+                f"签到成功，余额增加{amount:.2f}元，账户余额为{bank_data.accounts[user_id]:.2f}元"
+            )
+            return
+
+        # 3. 本银行转账：/bank transfer 本行 <目标卡号> <金额>
         elif len(args) == 4 and args[0] == "transfer" and args[1] == "本行":
+            target_card = args[2]
             try:
-                target_card = args[2]
-                amount = int(args[3])
+                amount = round(float(args[3]), 2)
                 if amount <= 0:
                     yield event.plain_result("转账金额必须为正数")
-                    return
-                if amount > 50000:
-                    yield event.plain_result("单次转账不能超过50000元")
                     return
                 target_user_id = None
                 for uid, card in bank_data.cards.items():
@@ -236,41 +207,38 @@ class BankPlugin(Star):
                     return
                 current_balance = bank_data.accounts.get(user_id, 0)
                 if current_balance < amount:
-                    yield event.plain_result(f"余额不足！当前余额：{current_balance} 元")
+                    yield event.plain_result(f"余额不足！当前余额：{current_balance:.2f} 元")
                     return
                 with LOCK:
-                    bank_data.accounts[user_id] = current_balance - amount
-                    bank_data.accounts[target_user_id] = bank_data.accounts.get(target_user_id, 0) + amount
+                    bank_data.accounts[user_id] = round(current_balance - amount, 2)
+                    bank_data.accounts[target_user_id] = round(bank_data.accounts.get(target_user_id, 0) + amount, 2)
                 bank_data.add_transaction(user_id, "转账支出", amount, target_card)
                 bank_data.add_transaction(target_user_id, "转账收入", amount, bank_data.cards[user_id])
                 bank_data.save_data()
                 yield event.plain_result(
                     f"向本行卡号 {target_card} 转账成功！\n"
-                    f"转账金额：{amount} 元\n"
-                    f"当前余额：{bank_data.accounts[user_id]} 元"
+                    f"转账金额：{amount:.2f} 元\n"
+                    f"当前余额：{bank_data.accounts[user_id]:.2f} 元"
                 )
                 return
             except ValueError:
                 yield event.plain_result("请输入正确的金额数字")
                 return
-                
-        # 5. 跨行转账：/bank transfer <目标银行> <目标账户> <金额>
+
+        # 4. 跨行转账：/bank transfer <目标银行> <目标账户> <金额>
         elif len(args) == 4 and args[0] == "transfer":
+            bank_name = args[1]
+            target_account = args[2]
             try:
-                bank_name = args[1]
-                target_account = args[2]
-                amount = int(args[3])
+                amount = round(float(args[3]), 2)
                 if amount <= 0:
                     yield event.plain_result("转账金额必须为正数")
                     return
-                if amount > 50000:
-                    yield event.plain_result("单次转账不能超过50000元")
-                    return
                 current_balance = bank_data.accounts.get(user_id, 0)
                 if current_balance < amount:
-                    yield event.plain_result(f"余额不足！当前余额：{current_balance} 元")
+                    yield event.plain_result(f"余额不足！当前余额：{current_balance:.2f} 元")
                     return
-                bank_data.accounts[user_id] = current_balance - amount
+                bank_data.accounts[user_id] = round(current_balance - amount, 2)
                 success = other_bank_transfer(bank_name, target_account, amount)
                 if success:
                     bank_data.add_transaction(
@@ -278,8 +246,8 @@ class BankPlugin(Star):
                     )
                     bank_data.save_data()
                     yield event.plain_result(
-                        f"已成功向{bank_name}的账户{target_account}转账{amount}元。\n"
-                        f"当前余额：{bank_data.accounts[user_id]} 元"
+                        f"已成功向{bank_name}的账户{target_account}转账{amount:.2f}元。\n"
+                        f"当前余额：{bank_data.accounts[user_id]:.2f} 元"
                     )
                 else:
                     bank_data.accounts[user_id] = current_balance
@@ -288,8 +256,8 @@ class BankPlugin(Star):
             except ValueError:
                 yield event.plain_result("请输入正确的金额数字")
                 return
-                
-        # 6. 查询交易记录：/bank record [条数]
+
+        # 5. 查询交易记录：/bank record [条数]
         elif (len(args) == 1 or len(args) == 2) and args[0] == "record":
             try:
                 if len(args) == 2:
@@ -304,21 +272,21 @@ class BankPlugin(Star):
                 result = ["最近交易记录："]
                 for idx, record in enumerate(display_records, 1):
                     result.append(
-                        f"{idx}. {record['time']} - {record['type']}：{record['amount']}元 "
-                        f"{'→ ' + record['target'] if record['target'] else ''} "
-                        f"[余额：{record['balance']}元]"
+                        f"{idx}. {record['time']} - {record['type']}：{float(record['amount']):.2f}元 "
+                        f"{'→ ' + str(record['target']) if record['target'] else ''} "
+                        f"[余额：{float(record['balance']):.2f}元]"
                     )
                 yield event.plain_result("\n".join(result))
                 return
             except ValueError:
                 yield event.plain_result("用法：/bank record [条数]")
                 return
-                
+
+        # 命令帮助
         yield event.plain_result(
             "银行操作命令帮助：\n"
-            "/bank balance - 查询余额\n"
-            "/bank deposit <金额> - 存款\n"
-            "/bank withdraw <金额> - 取款\n"
+            "/bank chaxun - 查询余额\n"
+            "/bank qiandao - 每日签到（100~500元，含小数）\n"
             "/bank transfer 本行 <目标卡号> <金额> - 本银行转账\n"
             "/bank transfer <目标银行> <目标账户> <金额> - 跨行转账\n"
             "/bank record [条数] - 查询交易记录（默认10条，最多20条）"
