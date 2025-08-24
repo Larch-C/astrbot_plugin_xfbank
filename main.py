@@ -6,30 +6,37 @@ from datetime import datetime
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register    
 from astrbot.api import logger
+import asyncio
+from astrbot.api.star import StarTools
 
 # 数据持久化相关配置
-DATA_FILE = "bank_data.json"
 LOCK = threading.Lock()  # 用于线程安全操作
 
 class BankData:
     """银行数据管理类，负责数据的加载、保存和线程安全操作"""
     def __init__(self):
+        self.data_dir = StarTools.get_data_dir("xfbank")
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_file = self.data_dir / "bank_data.json"
         self.accounts = {}      # {user_id: 余额}
         self.cards = {}         # {user_id: 卡号}
         self.transactions = {}  # {user_id: [交易记录]}
         self.last_checkin = {}  # {user_id: 上次签到日期}
+        self.card_to_user = {}  # {卡号: user_id}
         self.load_data()
 
     def load_data(self):
         """从文件加载数据"""
-        if os.path.exists(DATA_FILE):
+        if self.data_file.exists():
             try:
-                with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                with open(self.data_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.accounts = data.get('accounts', {})
                     self.cards = data.get('cards', {})
                     self.transactions = data.get('transactions', {})
                     self.last_checkin = data.get('last_checkin', {})
+                    # 构建卡号反查索引
+                    self.card_to_user = {v: k for k, v in self.cards.items()}
                 logger.info("银行数据加载成功")
             except Exception as e:
                 logger.error(f"加载银行数据失败: {str(e)}")
@@ -44,7 +51,7 @@ class BankData:
                     'transactions': self.transactions,
                     'last_checkin': self.last_checkin
                 }
-                with open(DATA_FILE, 'w', encoding='utf-8') as f:
+                with open(self.data_file, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
             logger.info("银行数据保存成功")
         except Exception as e:
@@ -67,7 +74,7 @@ class BankData:
         # 只保留最近100条记录
         if len(self.transactions[user_id]) > 100:
             self.transactions[user_id] = self.transactions[user_id][-100:]
-        self.save_data()
+        # 不再立即保存数据
 
 # 全局银行数据实例
 bank_data = BankData()
@@ -80,36 +87,32 @@ def generate_card_number(user_id: str) -> str:
         if number not in existing_cards:
             return number
 
-def other_bank_transfer(bank_name: str, target_account: str, amount: int) -> bool:
+async def other_bank_transfer(bank_name: str, target_account: str, amount: float) -> bool:
     """模拟跨行转账接口"""
     logger.info(f"向{bank_name}的账户{target_account}转账{amount}元")
-    import time
-    time.sleep(0.5)
+    await asyncio.sleep(0.5)
     return True
 
 @register("xfbank", "YourName", "一个功能完善的虚拟银行插件", "2.0.0")
 class BankPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        self.start_auto_save()
-
-    def start_auto_save(self):
-        """启动自动保存数据的定时任务"""
-        def auto_save():
-            while True:
-                bank_data.save_data()
-                import time
-                time.sleep(300)
-        
-        thread = threading.Thread(target=auto_save, daemon=True)
-        thread.start()
+        self.auto_save_task = None
 
     async def initialize(self):
         logger.info("虚拟银行插件已初始化")
+        self.auto_save_task = asyncio.create_task(self.auto_save())
 
     async def terminate(self):
         bank_data.save_data()
         logger.info("虚拟银行插件已卸载")
+        if self.auto_save_task:
+            self.auto_save_task.cancel()
+
+    async def auto_save(self):
+        while True:
+            bank_data.save_data()
+            await asyncio.sleep(300)
 
     @filter.command("xfbank")
     async def xfbank(self, event: AstrMessageEvent):
@@ -129,6 +132,7 @@ class BankPlugin(Star):
             # 创建账户
             card_number = generate_card_number(user_id)
             bank_data.cards[user_id] = card_number
+            bank_data.card_to_user[card_number] = user_id
             bank_data.accounts[user_id] = 0
             bank_data.add_transaction(user_id, "开户", 0)
             bank_data.save_data()
@@ -195,11 +199,7 @@ class BankPlugin(Star):
                 if amount <= 0:
                     yield event.plain_result("转账金额必须为正数")
                     return
-                target_user_id = None
-                for uid, card in bank_data.cards.items():
-                    if card == target_card:
-                        target_user_id = uid
-                        break
+                target_user_id = bank_data.card_to_user.get(target_card)
                 if not target_user_id:
                     yield event.plain_result("目标卡号不存在")
                     return
@@ -240,7 +240,7 @@ class BankPlugin(Star):
                     yield event.plain_result(f"余额不足！当前余额：{current_balance:.2f} 元")
                     return
                 bank_data.accounts[user_id] = round(current_balance - amount, 2)
-                success = other_bank_transfer(bank_name, target_account, amount)
+                success = await other_bank_transfer(bank_name, target_account, amount)
                 if success:
                     bank_data.add_transaction(
                         user_id, f"跨行转账至{bank_name}", amount, target_account
